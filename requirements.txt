@@ -15,3 +15,5 @@ pydantic-settings
 alembic
 jinja2
 python-multipart
+duckduckgo-search
+beautifulsoup4
