@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+celery
+redis
+sqlalchemy
+psycopg2-binary
+openai
+elevenlabs
+moviepy
+python-dotenv
+anthropic
+requests
+pydantic
+pydantic-settings
+alembic
+jinja2
+python-multipart

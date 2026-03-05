@@ -1,0 +1,324 @@
+# 🎬 Hệ Thống Tự Động Hóa Video AI (AI Video Automation System)
+
+Tài liệu thiết kế kỹ thuật cho hệ thống sản xuất video tự động hóa hoàn toàn bằng AI. Hệ thống hỗ trợ 2 luồng nội dung (Channel) riêng biệt với kiến trúc modular, dễ mở rộng và bảo trì.
+
+---
+
+## 📑 Mục Lục
+
+1. [Tổng Quan](#1-tổng-quan)
+2. [Kiến Trúc Hệ Thống](#2-kiến-trúc-hệ-thống)
+3. [Cấu Trúc Dự Án](#3-cấu-trúc-dự-án)
+4. [Channel 1: Trending Content Pipeline](#4-channel-1-trending-content-pipeline)
+5. [Channel 2: Evergreen Content Pipeline](#5-channel-2-evergreen-content-pipeline)
+6. [Core Services & Shared Components](#6-core-services--shared-components)
+7. [Cơ Sở Dữ Liệu (Database Schema)](#7-cơ-sở-dữ-liệu-database-schema)
+8. [Triển Khai & Lịch Trình (Deployment & Scheduler)](#8-triển-khai--lịch-trình-deployment--scheduler)
+9. [Best Practices & Khuyến Nghị](#9-best-practices--khuyến-nghị)
+
+---
+
+## 1. Tổng Quan
+
+Hệ thống được thiết kế để sản xuất video ngắn (Shorts/Reels/TikTok) tự động dựa trên 2 chiến lược nội dung:
+
+| Đặc điểm | Channel 1: Trending | Channel 2: Evergreen |
+| :--- | :--- | :--- |
+| **Mục tiêu** | Tin hot, sự kiện, AI, công nghệ, drama | Lịch sử, Khoa học, Vũ trụ, Giáo dục |
+| **Tuổi thọ video** | Ngắn hạn (Viral nhanh) | Dài hạn (Evergreen, tồn tại nhiều năm) |
+| **Tần suất** | 3 video / tuần | 1–2 video / tuần |
+| **Yêu cầu chính** | Tốc độ xử lý nhanh | Độ chính xác thông tin (Fact-check) |
+| **Ví dụ** | "AI just replaced programmers?" | "What killed the dinosaurs?" |
+
+---
+
+## 2. Kiến Trúc Hệ Thống
+
+### Tech Stack
+- **Language:** Python 3.9+
+- **API Framework:** FastAPI
+- **Task Queue:** Celery + Redis
+- **Database:** PostgreSQL (SQLAlchemy)
+- **Media Processing:** FFmpeg, MoviePy
+- **AI Services:** OpenAI/Anthropic (LLM), ElevenLabs (TTS), Stable Diffusion/DALL·E (Image)
+- **Storage:** AWS S3 / Local Storage
+- **Container:** Docker & Docker Compose
+
+### Pipeline Overview
+```mermaid
+graph TD
+    A[Scheduler] -->|Trigger| B(Celery Worker)
+    B -->|Channel 1| C[Trending Pipeline]
+    B -->|Channel 2| D[Evergreen Pipeline]
+    C --> E[Collect -> Rank -> Script -> Media -> Render]
+    D --> F[Library -> Research -> Script -> FactCheck -> Media -> Render]
+    E --> G[Publish API]
+    F --> G
+    G --> H[YouTube/TikTok/Insta]
+
+project_root/
+├── app/
+│   ├── core/             # Config, DB connection, Logger, Security
+│   ├── services/         # Common services (LLM, TTS, Image, Video Renderer)
+│   ├── channels/         # Logic riêng cho từng channel
+│   │   ├── trending/     # Channel 1: Collectors, Rankers
+│   │   └── evergreen/    # Channel 2: Research, FactCheck
+│   ├── workers/          # Celery tasks (Queue processing)
+│   ├── models/           # Database Models (SQLAlchemy)
+│   ├── api/              # FastAPI endpoints
+│   └── utils/            # Helper functions
+├── tasks/                # Celery beat schedules
+├── tests/
+├── docker-compose.yml
+├── Dockerfile
+├── requirements.txt
+└── README.md
+
+Channel 1: Trending Content Pipeline
+Luồng xử lý (Workflow)
+Collect Trends: Lấy dữ liệu từ Google Trends, Reddit, News API.
+Rank Topic: AI chọn topic có tiềm năng viral nhất.
+Generate Script: Viết kịch bản 40s (Hook, Body, Ending).
+AI Review: Agent khác kiểm tra độ hấp dẫn.
+Media Gen: Tạo Voice (ElevenLabs) và Image (Stable Diffusion).
+Render: Ghép video (FFmpeg/MoviePy).
+Publish: Đẩy lên nền tảng.
+Code Implementation (Worker)
+
+# app/workers/trending_pipeline.py
+from celery import Celery
+from app.channels.trending import collector, ranker, scripter, media, renderer
+
+app = Celery('tasks', broker='redis://localhost:6379/0')
+
+@app.task(bind=True, max_retries=3)
+def run_trending_pipeline(self):
+    try:
+        # Step 1: Collect Trends
+        raw_topics = collector.fetch_trends(sources=['google', 'reddit', 'news_api'])
+        
+        # Step 2: Rank Topics (AI)
+        best_topic = ranker.select_viral_topic(topics=raw_topics)
+        
+        # Step 3: Generate Script
+        script_data = scripter.generate_script(topic=best_topic)
+        
+        # Step 4: AI Review (Critique)
+        improved_script = scripter.review_script(script=script_data)
+        
+        # Step 5: Generate Media (Async parallel)
+        voice_path = media.generate_voice(text=improved_script['narration'])
+        images = media.generate_images(prompts=improved_script['image_prompts'])
+        
+        # Step 6: Render Video
+        video_path = renderer.render_short(
+            audio=voice_path, 
+            images=images, 
+            subtitles=improved_script['subtitles']
+        )
+        
+        # Step 7: Publish
+        publisher.upload(video_path, platforms=['tiktok', 'youtube_shorts'])
+        
+        return {"status": "success", "video": video_path}
+        
+    except Exception as exc:
+        raise self.retry(exc=exc, countdown=300)
+
+Prompt Engineering (Channel 1)
+Ranking Prompt:
+Rank these topics based on viral potential for short video content.
+Consider: Controversy, Novelty, Emotional Impact.
+Input: {topics}
+Output: JSON { "top_topic": "string", "reason": "string" }
+
+Script Prompt:
+Write a 40-second short video script.
+Structure:
+1. Hook (first 3 seconds) - Must be shocking.
+2. Body - Key information.
+3. Ending - Call to action.
+Also generate: 5 image prompts, video title, hashtags.
+Topic: {topic}
+
+5. Channel 2: Evergreen Content Pipeline
+Luồng xử lý (Workflow)
+Topic Library: Chọn topic từ DB (chưa làm).
+Research Agent: Tổng hợp thông tin từ Wikipedia, NASA, Science Articles.
+Script Generator: Viết kịch bản giáo dục.
+Fact-Check Agent: Verify độ chính xác (Critical Step).
+Media & Render: Tương tự Channel 1 nhưng chất lượng hình ảnh cao hơn.
+Code Implementation (Worker)
+
+# app/workers/evergreen_pipeline.py
+from app.channels.evergreen import library, research, scripter, factcheck
+
+@app.task(bind=True)
+def run_evergreen_pipeline(self, topic_id=None):
+    # Step 1: Select Topic from DB
+    if not topic_id:
+        topic = library.get_unused_topic(category='space')
+    else:
+        topic = library.get_topic(topic_id)
+    
+    # Step 2: Deep Research (RAG or Search)
+    research_data = research.gather_facts(topic=topic.name, sources=['wikipedia', 'nasa'])
+    
+    # Step 3: Generate Script
+    script = scripter.create_educational_script(topic=topic, facts=research_data)
+    
+    # Step 4: Fact-Check Agent (Critical Step)
+    is_accurate = factcheck.verify(script=script, source_data=research_data)
+    
+    if not is_accurate:
+        # Loop back to Step 3 if facts are wrong
+        return run_evergreen_pipeline.retry(kwargs={'topic_id': topic.id})
+    
+    # Step 5, 6, 7, 8: Same as Channel 1 (Voice, Visual, Render, Publish)
+    return produce_final_video(script)
+
+
+
+
+Prompt Engineering (Channel 2)
+Fact-Check Prompt:
+
+Act as a scientist. Verify these claims against the source data.
+Script: {script}
+Source Data: {source_data}
+Return JSON: { "accurate": bool, "errors": [] }
+If accurate is false, list specific errors.
+
+
+6. Core Services & Shared Components
+LLM Service (app/services/llm.py)
+Trừu tượng hóa các provider để dễ switch.
+
+
+class LLMService:
+    def __init__(self, provider='openai'):
+        self.client = get_client(provider)
+    
+    def chat(self, prompt, **kwargs):
+        response = self.client.chat.completions.create(
+            model="gpt-4o", 
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.choices[0].message.content
+
+
+7. Cơ Sở Dữ Liệu (Database Schema)
+Sử dụng SQLAlchemy Models.
+# app/models.py
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean
+from sqlalchemy.ext.declarative import declarative_base
+
+Base = declarative_base()
+
+class VideoProject(Base):
+    __tablename__ = "video_projects"
+    
+    id = Column(Integer, primary_key=True)
+    channel_type = Column(String) # 'trending' or 'evergreen'
+    topic = Column(String)
+    script = Column(Text)
+    status = Column(String) # 'pending', 'processing', 'done', 'failed'
+    video_url = Column(String)
+    fact_check_passed = Column(Boolean, default=False)
+    created_at = Column(DateTime)
+    updated_at = Column(DateTime)
+
+class TopicLibrary(Base):
+    __tablename__ = "topic_library"
+    
+    id = Column(Integer, primary_key=True)
+    name = Column(String)
+    category = Column(String) # 'history', 'space', 'science'
+    used = Column(Boolean, default=False)
+
+
+
+8. Triển Khai & Lịch Trình (Deployment & Scheduler)
+Celery Beat Schedule (tasks.py)
+Điều phối tần suất video tự động.
+
+from celery.schedules import crontab
+
+app.conf.beat_schedule = {
+    # Channel 1: 3 videos/week (Mon, Wed, Fri at 10:00)
+    'run-trending-pipeline': {
+        'task': 'app.workers.trending_pipeline.run_trending_pipeline',
+        'schedule': crontab(hour=10, minute=0, day_of_week='1,3,5'),
+    },
+    # Channel 2: 1 video/week (Sun at 12:00)
+    'run-evergreen-pipeline': {
+        'task': 'app.workers.evergreen_pipeline.run_evergreen_pipeline',
+        'schedule': crontab(hour=12, minute=0, day_of_week='0'),
+    },
+}
+
+
+
+
+Docker Compose (docker-compose.yml)
+
+
+version: '3.8'
+services:
+  web:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+      - db
+  worker:
+    build: .
+    command: celery -A app.workers worker --loglevel=info
+    depends_on:
+      - redis
+      - db
+  beat:
+    build: .
+    command: celery -A app.workers beat --loglevel=info
+  redis:
+    image: redis:alpine
+  db:
+    image: postgres:13
+    environment:
+      POSTGRES_PASSWORD: password
+
+
+
+9. Best Practices & Khuyến Nghị
+1. Quản lý State (Trạng thái)
+Mỗi bước trong pipeline phải lưu trạng thái vào DB.
+Trạng thái: PENDING -> SCRIPT_DONE -> MEDIA_DONE -> PUBLISHED.
+Nếu bước "Render Video" lỗi, không cần chạy lại từ đầu.
+2. Xử lý lỗi (Error Handling)
+API AI có thể fail. Luôn có cơ chế Retry (thử lại) với exponential backoff.
+Nếu AI generate ảnh lỗi quá 3 lần -> Chuyển sang ảnh stock (Pexels/Unsplash).
+3. Tối ưu chi phí
+Channel 1: Dùng model nhanh/rẻ (gpt-3.5-turbo / Haiku) cho ranking/script.
+Channel 2: Dùng model xịn (gpt-4o / Sonnet) cho Research và Fact-check.
+4. Storage
+Lưu file âm thanh/video tạm vào AWS S3 hoặc Google Cloud Storage.
+Không lưu trực tiếp trên server app để dễ scale (horizontal scaling).
+5. Monitoring
+Dùng Prometheus + Grafana hoặc log vào ELK Stack.
+Theo dõi: Số lượng video thành công, chi phí API/token, thời gian xử lý trung bình.
+6. Security
+Quản lý API Keys qua Environment Variables (.env).
+Không commit file .env vào Git.
+
+
+
+
+
+
+
+
+
+
+
